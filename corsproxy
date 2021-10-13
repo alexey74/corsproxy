@@ -1,41 +1,54 @@
-#!venv/bin/python -u
-'''
+#!/usr/bin/python -u
+"""
 Provides a simple CORS proxy for GET and POST requests. Reads list of
 target port:host[:targetport] from the command line, or from your config
 file.
-'''
-from gevent import monkey; monkey.patch_all() # noqa :E702
-import os
-import sys
+"""
 import argparse
+import os
 from pathlib import Path
-import requests
-from bottle import Bottle, request, response
+import signal
+import sys
+
+
+from gevent import monkey
+
+
+monkey.patch_all()  # noqa :E702
+
+import requests  # @NoMove
+
+from bottle import Bottle, request, response  # @NoMove
 
 # Get location of optional conf file
 PROG = Path(sys.argv[0]).stem
-CONFFILE = Path(os.getenv('XDG_CONFIG_HOME', '~/.config')).expanduser() / PROG
+CONFFILE = Path(os.getenv("XDG_CONFIG_HOME", "~/.config")).expanduser() / PROG
+
 
 def check_targets(targets):
-    'Do some sanity checking on user specified target mappings'
+    "Do some sanity checking on user specified target mappings"
     ports = set()
     for t in targets:
-        if ':' not in t:
+        if ":" not in t:
             sys.exit('Require port:host in entry "{}"'.format(t))
-        vals = t.split(':')
+        vals = t.split(":")
         if len(vals) > 3:
             sys.exit('Invalid entry "{}"'.format(t))
         port = vals[0]
         if port in ports:
-            sys.exit('Listening port {} specified more than once'.format(port))
+            sys.exit("Listening port {} specified more than once".format(port))
         ports.add(port)
+
 
 # Process command line options
 opt = argparse.ArgumentParser(description=__doc__.strip())
-opt.add_argument('targets', nargs='*',
-        help='1 or more proxy target hosts in port:host[:targetport] '
-        'format. if not set then will try to read from '
-        '~/.config/{} file.'.format(PROG))
+opt.add_argument(
+    "targets",
+    nargs="*",
+    help="1 or more proxy target hosts in port:host[:targetport] "
+    "format. if not set then will try to read from "
+    "~/.config/{} file.".format(PROG),
+)
 args = opt.parse_args()
 
 targets = args.targets
@@ -44,7 +57,7 @@ if not targets:
     if CONFFILE.exists():
         targets = CONFFILE.read_text().strip().split()
     if not targets:
-        opt.error('No target host mappings defined')
+        opt.error("No target host mappings defined")
 
 check_targets(targets)
 
@@ -52,54 +65,78 @@ app = Bottle()
 
 mytarget = None
 
-METHODS = ['GET', 'POST', 'OPTIONS']
+METHODS = ["GET", "POST", "OPTIONS"]
 POST_HEADERS = {
-    'Access-Control-Allow-Methods': ', '.join(METHODS),
-    'Access-Control-Allow-Headers': 'Content-Type, '
-    'Access-Control-Allow-Headers, Authorization, X-Requested-With',
+    "Access-Control-Allow-Methods": ", ".join(METHODS),
+    "Access-Control-Allow-Headers": "Content-Type, Content-Length, "
+    "Access-Control-Allow-Headers, Authorization, X-Requested-With",
 }
 
-@app.get('/<path:path>', method=METHODS)
-def get(path):
-    response.set_header('Access-Control-Allow-Origin', '*')
-    qstring = request.query_string
-    qstring = ('?' + qstring) if qstring else ''
-    path = ('/' + path) if path else ''
-    url = '{}://{}{}{}'.format(request.urlparts[0], mytarget, path, qstring)
-    ct = request.content_type
-    header = {'Content-Type': ct} if ct else None
 
-    if request.method == 'GET':
+@app.get("/<path:path>", method=METHODS)
+def get(path):
+    origin = os.getenv("ORIGIN", "*")
+    print("origin:", origin)
+    response.set_header("Access-Control-Allow-Origin", origin)
+
+    qstring = request.query_string
+    qstring = ("?" + qstring) if qstring else ""
+    path = ("/" + path) if path else ""
+    url = "{}://{}{}{}".format(request.urlparts[0], mytarget, path, qstring)
+    ct = request.content_type
+    header = {"Content-Type": ct} if ct else {}
+
+    for k, v in request.headers.items():
+        if k.lower() not in ["host", "etag", "if-none-match"]:
+            header[k] = v
+
+    for k, v in POST_HEADERS.items():
+        response.set_header(k, v)
+
+    print(">> rq:", request, "headers:", header)
+
+    if request.method == "GET":
         r = requests.get(url, headers=header)
     else:
-        for k, v in POST_HEADERS.items():
-            response.set_header(k, v)
 
-        if request.method == 'OPTIONS':
+        if request.method == "OPTIONS":
             return
 
         r = requests.post(url, data=request.body.read(), headers=header)
 
+    print("<<<", r.headers)
+    for key in r.headers:
+        if key.lower() != "Access-Control-Allow-Origin".lower():
+            response.set_header(key, r.headers[key])
+
     response.status = r.status_code
+    print("<< resp:", r.status_code, "text:", r.text)
     return r.text
 
-@app.get('/', method=METHODS)
+
+@app.get("/", method=METHODS)
 def getroot():
     return get(None)
 
+
 def run(target):
     global mytarget
-    port, host = target.split(':', maxsplit=1)
+
+    signal.signal(signal.SIGINT, lambda *args: sys.exit(0))
+
+    port, host = target.split(":", maxsplit=1)
     mytarget = host
-    print('Starting proxy for {} -> {}'.format(port, host))
-    app.run(host='0.0.0.0', port=port, server='gevent', quiet=True)
+    print("Starting proxy for {} -> {}".format(port, host))
+    app.run(host="0.0.0.0", port=port, server="gevent", quiet=True)
+
 
 # Just run in same process if we only have a single proxy service
 # configured. Otherwise create and start a process for each service.
 if len(targets) > 1:
     import multiprocessing
+
     for t in targets:
-        multiprocessing.Process(target=run, args=(t, )).start()
+        multiprocessing.Process(target=run, args=(t,)).start()
 
     for p in multiprocessing.active_children():
         p.join()
