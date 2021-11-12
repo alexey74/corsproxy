@@ -68,8 +68,17 @@ mytarget = None
 METHODS = ["GET", "POST", "OPTIONS"]
 POST_HEADERS = {
     "Access-Control-Allow-Methods": ", ".join(METHODS),
-    "Access-Control-Allow-Headers": "Content-Type, Content-Length, "
-    "Access-Control-Allow-Headers, Authorization, X-Requested-With",
+    "Access-Control-Allow-Headers": ", ".join(
+        [
+            "Content-Type",
+            "Content-Length",
+            "mime-version",
+            "Access-Control-Allow-Headers",
+            "Authorization",
+            "X-Requested-With",
+        ]
+    ),
+    "Access-Control-Allow-Credentials": "true",
 }
 
 
@@ -91,9 +100,13 @@ def get(path):
             header[k] = v
 
     for k, v in POST_HEADERS.items():
+        if k.lower() == "transfer-encoding" and v.lower() == "chunked":
+            continue
         response.set_header(k, v)
 
-    print(">> rq:", request, "headers:", header)
+    print(">> rq:", request)
+    for k, v in header.items():
+        print(">> h:", k, ": ", v)
 
     if request.method == "GET":
         r = requests.get(url, headers=header)
@@ -102,10 +115,16 @@ def get(path):
         if request.method == "OPTIONS":
             return
 
-        r = requests.post(url, data=request.body.read(), headers=header)
+        data = request.body.read()
+        print(">> data:", data)
+        assert len(data) == int(header["Content-Length"])
+
+        r = requests.post(url, data=data, headers=header)
 
     print("<<<", r.headers)
     for key in r.headers:
+        if key.lower() == "transfer-encoding" and r.headers[key].lower() == "chunked":
+            continue
         if key.lower() != "Access-Control-Allow-Origin".lower():
             response.set_header(key, r.headers[key])
 
