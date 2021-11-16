@@ -14,6 +14,15 @@
 
 NAME = $(shell basename $(CURDIR))
 
+up: build
+	docker run -v ~/.config/corsproxy:/root/.config/corsproxy \
+		-p 9000:9000 -p 9031:9031 \
+		--add-host host.docker.internal:host-gateway \
+		--restart always -d --name $(NAME) $(NAME)
+
+build:
+	docker build -t $(NAME) .
+
 check:
 	flake8 $(NAME)
 	shellcheck *.sh
@@ -24,3 +33,12 @@ docker:
 
 clean:
 	rm -rf *.pyc  __pycache__
+	
+down:
+	docker update --restart no ${NAME}
+	docker kill ${NAME}
+	docker rm ${NAME}
+	
+log:
+	docker logs $(NAME) -f
+

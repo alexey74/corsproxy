@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import signal
 import sys
-
+from urllib.parse import urlparse
 
 from gevent import monkey
 
@@ -84,7 +84,16 @@ POST_HEADERS = {
 
 @app.get("/<path:path>", method=METHODS)
 def get(path):
-    origin = os.getenv("ORIGIN", "*")
+
+    origin = os.getenv("ORIGIN", "")
+    if not origin:
+        referrer = request.headers.get("Referer")
+        if referrer:
+            referrer = urlparse(referrer)
+            origin = f"{referrer.scheme}://{referrer.netloc}"
+        else:
+            origin = "*"
+
     print("origin:", origin)
     response.set_header("Access-Control-Allow-Origin", origin)
 
