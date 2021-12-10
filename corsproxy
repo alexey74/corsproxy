@@ -5,6 +5,7 @@ target port:host[:targetport] from the command line, or from your config
 file.
 """
 import argparse
+import logging
 import os
 from pathlib import Path
 import signal
@@ -17,12 +18,13 @@ from gevent import monkey
 monkey.patch_all()  # noqa :E702
 
 import requests  # @NoMove
-
 from bottle import Bottle, request, response  # @NoMove
 
 # Get location of optional conf file
 PROG = Path(sys.argv[0]).stem
 CONFFILE = Path(os.getenv("XDG_CONFIG_HOME", "~/.config")).expanduser() / PROG
+
+log = logging.getLogger(__name__)
 
 
 def check_targets(targets):
@@ -81,6 +83,15 @@ POST_HEADERS = {
     "Access-Control-Allow-Credentials": "true",
 }
 
+HOP_BY_HOP_HEADERS = [
+    "Connection",
+    "Keep-Alive",
+    "Public" "Proxy-Authenticate",
+    "Transfer-Encoding",
+    "Upgrade",
+    "Content-Encoding",  # FIXME: check
+]
+
 
 @app.get("/<path:path>", method=METHODS)
 def get(path):
@@ -94,13 +105,18 @@ def get(path):
         else:
             origin = "*"
 
-    print("origin:", origin)
+    log.debug("origin: %s", origin)
     response.set_header("Access-Control-Allow-Origin", origin)
 
     qstring = request.query_string
     qstring = ("?" + qstring) if qstring else ""
     path = ("/" + path) if path else ""
-    url = "{}://{}{}{}".format(request.urlparts[0], mytarget, path, qstring)
+    url = "{}://{}{}{}".format(
+        request.urlparts[0] if not mytarget.endswith(":443") else "https",
+        mytarget,
+        path,
+        qstring,
+    )
     ct = request.content_type
     header = {"Content-Type": ct} if ct else {}
 
@@ -109,13 +125,11 @@ def get(path):
             header[k] = v
 
     for k, v in POST_HEADERS.items():
-        if k.lower() == "transfer-encoding" and v.lower() == "chunked":
-            continue
         response.set_header(k, v)
 
-    print(">> rq:", request)
+    log.debug(">> rq: %s :: url: %s", request, url)
     for k, v in header.items():
-        print(">> h:", k, ": ", v)
+        log.debug(">> hdr: %s: %s", k, v)
 
     if request.method == "GET":
         r = requests.get(url, headers=header)
@@ -125,20 +139,25 @@ def get(path):
             return
 
         data = request.body.read()
-        print(">> data:", data)
-        assert len(data) == int(header["Content-Length"])
+        log.debug(">> data: %s", data[:1000])
+        if len(data) != int(header["Content-Length"]):
+            log.error(
+                "Content-length mismatch: real:%s vs %s",
+                len(data),
+                header["Content-Length"],
+            )
 
         r = requests.post(url, data=data, headers=header)
 
-    print("<<<", r.headers)
+    log.debug("<<< %s", r.headers)
     for key in r.headers:
-        if key.lower() == "transfer-encoding" and r.headers[key].lower() == "chunked":
+        if key.lower() in [header.lower() for header in HOP_BY_HOP_HEADERS]:
             continue
         if key.lower() != "Access-Control-Allow-Origin".lower():
             response.set_header(key, r.headers[key])
 
     response.status = r.status_code
-    print("<< resp:", r.status_code, "text:", r.text)
+    log.debug("<< resp: %s text: %s", r.status_code, r.text[:1000])
     return r.text
 
 
@@ -149,12 +168,12 @@ def getroot():
 
 def run(target):
     global mytarget
-
+    logging.basicConfig(level=logging.DEBUG)
     signal.signal(signal.SIGINT, lambda *args: sys.exit(0))
 
     port, host = target.split(":", maxsplit=1)
     mytarget = host
-    print("Starting proxy for {} -> {}".format(port, host))
+    log.info("Starting proxy for %s -> %s", port, host)
     app.run(host="0.0.0.0", port=port, server="gevent", quiet=True)
 
 

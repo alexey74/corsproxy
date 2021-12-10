@@ -14,6 +14,9 @@
 
 NAME = $(shell basename $(CURDIR))
 
+dev-up:
+	pipenv run python corsproxy
+
 up: build
 	docker run -v ~/.config/corsproxy:/root/.config/corsproxy \
 		-p 9000:9000 -p 9031:9031 \
